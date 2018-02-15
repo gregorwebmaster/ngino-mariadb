@@ -1,74 +1,43 @@
 #!/bin/sh
 
-# execute any pre-init scripts, useful for images
-# based on this image
-for i in /scripts/pre-init.d/*sh
-do
-	if [ -e "${i}" ]; then
-		echo "[i] pre-init.d - processing $i"
-		. "${i}"
-	fi
-done
-
 if [ ! -d "/run/mysqld" ]; then
 	mkdir -p /run/mysqld
 	chown -R mysql:mysql /run/mysqld
 fi
 
 if [ -d /var/lib/mysql/mysql ]; then
-	echo "[i] MySQL directory already present, skipping creation"
+	echo "MySQL directory already present, skipping creation"
 else
-	echo "[i] MySQL data directory not found, creating initial DBs"
+	echo "MySQL data directory not found, creating initial DBs"
 
 	chown -R mysql:mysql /var/lib/mysql
 
 	mysql_install_db --user=mysql > /dev/null
 
-	if [ "$MYSQL_ROOT_PASSWORD" = "" ]; then
-		MYSQL_ROOT_PASSWORD=`pwgen 16 1`
-		echo "[i] MySQL root Password: $MYSQL_ROOT_PASSWORD"
-	fi
+    # postinstalation config
+    TMP_SQL=`mktemp`
+    if [ ! -f "$TMP_SQL" ]; then
+        return 1
+    fi
 
-	MYSQL_DATABASE=${MYSQL_DATABASE:-""}
-	MYSQL_USER=${MYSQL_USER:-""}
-	MYSQL_PASSWORD=${MYSQL_PASSWORD:-""}
+    echo "DROP DATABASE test;" > $TMP_SQL
 
-	tfile=`mktemp`
-	if [ ! -f "$tfile" ]; then
-	    return 1
-	fi
+    DATABASE_ADMIN=${DATABASE_ADMIN:-""}
+    ADMIN_PSWD=${ADMIN_PSWD:-""}
 
-	cat << EOF > $tfile
-USE mysql;
-FLUSH PRIVILEGES;
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
-UPDATE user SET password=PASSWORD("$MYSQL_ROOT_PASSWORD") WHERE user='root';
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;
-UPDATE user SET password=PASSWORD("") WHERE user='root' AND host='localhost';
-EOF
+    if [ "$DATABASE_ADMIN" != "" ] && [ "$ADMIN_PSWD" != "" ]; then
+        echo "Create admin user"
 
-	if [ "$MYSQL_DATABASE" != "" ]; then
-	    echo "[i] Creating database: $MYSQL_DATABASE"
-	    echo "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\` CHARACTER SET utf8 COLLATE utf8_general_ci;" >> $tfile
+        echo "USE mysql;" >> $TMP_SQL
+        echo "FLUSH PRIVILEGES;" >> $TMP_SQL
+	    echo "GRANT ALL ON *.* to '$DATABASE_ADMIN'@'%' IDENTIFIED BY '$ADMIN_PSWD';" >> $TMP_SQL
+	    echo "UPDATE mysql.user SET plugin = 'mysql_native_password' WHERE user = '$DATABASE_ADMIN';" >> $TMP_SQL
+	    echo "FLUSH PRIVILEGES;" >> $TMP_SQL
 
-	    if [ "$MYSQL_USER" != "" ]; then
-		echo "[i] Creating user: $MYSQL_USER with password $MYSQL_PASSWORD"
-		echo "GRANT ALL ON \`$MYSQL_DATABASE\`.* to '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD';" >> $tfile
-	    fi
-	fi
-
-	/usr/bin/mysqld --user=mysql --bootstrap --verbose=0 < $tfile
-	rm -f $tfile
+    fi
 fi
-
-# execute any pre-exec scripts, useful for images
-# based on this image
-for i in /scripts/pre-exec.d/*sh
-do
-	if [ -e "${i}" ]; then
-		echo "[i] pre-exec.d - processing $i"
-		. ${i}
-	fi
-done
+    echo "Update configuration"
+	/usr/bin/mysqld --user=mysql --bootstrap --verbose=0 < $TMP_SQL
+    rm -f $TMP_SQL
 
 exec /usr/bin/mysqld --user=mysql --console
